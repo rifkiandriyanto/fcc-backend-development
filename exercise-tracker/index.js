@@ -1,126 +1,87 @@
 const express = require('express')
 const app = express()
 const cors = require('cors')
+let bodyParser = require(`body-parser`);
+let users = 0;
+let userMap = new Map();
+let idToUserMap = new Map();
+let idToExercises = new Map();
 require('dotenv').config()
-const mongoose = require('mongoose');
-const { Schema } = mongoose;
-
-mongoose.connect(process.env.tracker_DB);
-
-const UserSchema = new Schema({
-  username: String
-});
-
-const User = mongoose.model("User", UserSchema);
-
-const ExerciseSchema = new Schema({
-  user_id: { type: String, required: true },
-  description: String,
-  duration: Number,
-  date: Date
-});
-
-const Exercise = mongoose.model("Exercise", ExerciseSchema);
-
 
 app.use(cors())
 app.use(express.static('public'))
-app.use(express.urlencoded({ extended: true }))
+app.use(bodyParser.urlencoded({ extended: false }));
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/views/index.html')
 });
 
-app.get('/api/users', async (req, res) => {
-  const users = await User.find({}).select("_id username");
-  if(!users){
-    res.send("No users");
-  } else {
-    res.json(users);
-  }
-})
 
-app.post('/api/users', async (req, res) => {
-  console.log(req.body)
-  const userObj = new User({
-    username: req.body.username
-  })
+app.post("/api/users", function(req, res) {
+  const username = req.body.username;
+  let id = userMap.get(username);
+  if (!id) {
+    id = (++users).toString();
+    userMap.set(username, id);
+    idToUserMap.set(id, username);
+  }
+  res.json({ username: username, _id: id });
+});
 
-  try {
-    const user = await userObj.save()
-    console.log(user);
-    res.json(user)
-  } catch(err) {
-    console.log(err)
-  }
-})
+app.get("/api/users", function(req, res) {
+  let result = Array.from(userMap, ([username, _id]) => ({ username, _id }));
+  res.send(result);
+});
 
-app.post('/api/users/:_id/exercises', async (req, res) => {
-  const id = req.params._id;
-  const { description, duration, date } = req.body
+function objCompare(a, b) {
+  if ((new Date(a.date)) < (new Date(b.date))) { return -1; }
+  else if ((new Date(a.date)) < (new Date(b.date))) { return 1; }
+  else { return 0; }
+}
 
-  try {
-    const user = await User.findById(id)
-    if(!user){
-      res.send("Could not find user")
-    } else {
-      const exerciseObj = new Exercise({
-        user_id: user._id,
-        description,
-        duration,
-        date: date ? new Date(date) : new Date()
-      })
-      const exercise = await exerciseObj.save()
-      res.json({
-        _id: user._id,
-        username: user.username,
-        description: exercise.description,
-        duration: exercise.duration,
-        date: new Date(exercise.date).toDateString()
-      })
-    }
-  } catch(err) {
-      console.log(err)
-      res.send("There was an error saving the exercise")
-  }
-})
+app.post("/api/users/:_id/exercises", function(req, res) {
+  const id = req.params._id.toString();
+  const description = req.body.description;
+  const duration = parseInt(req.body.duration);
+  const username = idToUserMap.get(id);
+  let date = req.body.date;
+  if (!date) { date = (new Date()).toDateString(); }
+  else { date += "T00:00:00-06:00"; }
+  date = (new Date(date)).toDateString();
+  let log = idToExercises.get(id);
+  if (!log) { log = []; }
+  log.push({ description: description, duration: duration, date: date });
+  log.sort(objCompare).reverse();
+  idToExercises.set(id, log);
 
-app.get('/api/users/:_id/logs', async (req, res) => {
-  const { from, to, limit } = req.query;
-  const id = req.params._id;
-  const user = await User.findById(id);
-  if(!user){
-    res.send("Could not find user");
-    return;
+  res.json({ _id: id, username: username, date: date, duration: duration, description: description });
+});
+
+app.get("/api/users/:_id/logs", function(req, res) {
+  const id = req.params._id.toString();
+  const username = idToUserMap.get(id).toString() || "";
+  const exercises = idToExercises.get(id) || [];
+  const count = exercises.length;
+  let from = req.query.from;
+  let to = req.query.to;
+  const limit = req.query.limit;
+  let myLog = [];
+
+  if (from) {
+    from = (new Date(from + "T00:00:00-06:00"));
   }
-  let dateObj = {}
-  if(from) {
-    dateObj["$gte"] = new Date(from)
-  }
-  if(to) {
-    dateObj["$lte"] = new Date(to)
-  }
-  let filter = {
-    user_id: id
-  }
-  if(from || to) {
-    filter.date = dateObj;
+  if (to) {
+    to = (new Date(to + "T00:00:00-06:00"));
   }
 
-  const exercises = await Exercise.find(filter).limit(+limit ?? 500)
+  for (let i = 0; i < exercises.length; i++) {
+    if (limit && myLog.length == limit) { break; }
+    if (from && (from > (new Date(exercises[i].date)))) { continue; }
+    if (to && (to < (new Date(exercises[i].date)))) { continue; }
+    myLog.push(exercises[i]);
+  }
 
-  const log = exercises.map(e => ({
-    description: e.description,
-      duration: e.duration,
-      date: e.date.toDateString()
-  }))
-
-  res.json({
-    username: user.username,
-    count: exercises.length,
-    _id: user._id,
-    log
-  })
-})
+  res.json({ _id: id, username: username, count: myLog.length, log: myLog });
+});
 
 const listener = app.listen(process.env.PORT || 3000, () => {
   console.log('Your app is listening on port ' + listener.address().port)
